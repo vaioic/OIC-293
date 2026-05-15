@@ -1,8 +1,8 @@
-import skimage as sk
-from matplotlib import pyplot as plt
-from bioio import BioImage
-from scipy import ndimage
 import numpy as np
+import skimage as sk
+from bioio import BioImage
+from matplotlib import pyplot as plt
+from scipy import ndimage
 
 reader = BioImage("../data/10389_Plin2-rescan.czi")
 
@@ -66,5 +66,5 @@ sk.io.imsave("marked_region.png", sk.util.img_as_ubyte(overlay))
 nnz_tissue = np.count_nonzero(mask_tissue)
 nnz_protein = np.count_nonzero(mask)
 
-# Return the area ratio
+# Return the area ratioi
 print(f"Ratio of areas = {(nnz_protein/nnz_tissue) * 100}")
