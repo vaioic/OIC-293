@@ -14,7 +14,7 @@ This is a project with Yujin Leong (Lein Lab).
 
 1. Download or clone the GitHub repository
    ```bash
-   git clone git@github.com:vaioic/OIC-234.git
+   git clone git@github.com:vaioic/OIC-293.git
    cd OIC-293
    ```
 
@@ -40,14 +40,7 @@ This is a project with Yujin Leong (Lein Lab).
    .\venv\Scripts\activate
    ```
 
-2. Start Jupyter Lab
-   ```bash
-   python -m jupyterlab
-   ```
-
-3. Open the ``analyze_data.ipynb`` notebook
-
-4. Modify the variables ``data_directory`` and ``output_directory`` to point to the folder containing the image files and to the output directory, respectively
+TBD
 
 ## Issues
 

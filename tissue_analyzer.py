@@ -1,0 +1,199 @@
+import csv
+import re
+from pathlib import Path
+
+import numpy as np
+import skimage as sk
+from bioio import BioImage
+from matplotlib import pyplot as plt
+from scipy import ndimage
+
+
+def process_directory(input_dir, output_dir):
+
+    # Validate the inputs
+    if isinstance(input_dir, str):
+        input_dir = Path(input_dir)
+    elif isinstance(input_dir, Path):
+        pass
+    else:
+        raise TypeError(f"Expected input_dir to be a str or Path. Instead it is a {type(input_dir)}.")
+    
+    if not input_dir.exists():
+        input_dir.mkdir(parents=True)
+    elif input_dir.is_file():
+        raise TypeError(f"Expected input_dir to be a directory. Instead it appears to be a file: {input_dir}.")
+    
+    if isinstance(output_dir, str):
+        output_dir = Path(output_dir)
+    elif isinstance(output_dir, Path):
+        pass
+    else:
+        raise TypeError(f"Expected output_dir to be a str or Path. Instead it is a {type(output_dir)}.")
+    
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True)
+    elif output_dir.is_file():
+        raise TypeError(f"Expected output_dir to be a directory. Instead it appears to be a file: {output_dir}.")
+    
+
+    with open(output_dir / "measurements.csv", "w", newline="") as csvfile:
+
+        # Write CSV headers
+        csvwriter = csv.writer(csvfile, delimiter=",")
+        csvwriter.writerow(["File", "Marker Area (px)", "Tissue Area (px)", "Ratio"])                          
+    
+        file_list = get_filtered_file_list(input_dir)
+
+        for f in file_list:
+
+            num_pixels_marker, num_pixels_tissue, ratio = process_image(f, output_dir)
+
+            csvwriter.writerow([f.name, num_pixels_marker, num_pixels_tissue, ratio])    
+
+def get_filtered_file_list(input_dir):
+
+    file_list = input_dir.glob("*.czi")
+
+    pattern = re.compile(r"^([0-9]+)_([\w]+)(-rescan)?\.*", re.IGNORECASE)
+
+    filtered_files = {}
+
+    for f in file_list:
+        match = pattern.match(f.name)
+
+        sample_id, marker, rescan_flag = match.groups()
+
+        # To help keep files unique, we create a dict
+        key = (sample_id, marker.lower())
+
+        if (key not in filtered_files) or (rescan_flag is not None):
+            filtered_files[key] = f
+
+    # Extract the final list of Path objects
+    final_file_list = list(filtered_files.values())
+    
+    return final_file_list
+
+def process_image(image_path, output_path, downsample=0.25):
+
+    # Validate the inputs
+    if isinstance(image_path, str):
+        image_path = Path(image_path)
+    elif isinstance(image_path, Path):
+        pass
+    else:
+        raise TypeError(f"Expected image_path to be a str or Path. Instead it is a {type(image_path)}.")
+    
+    if isinstance(output_path, str):
+        output_path = Path(output_path)
+    elif isinstance(output_path, Path):
+        pass
+    else:
+        raise TypeError(f"Expected output_path to be a str or Path. Instead it is a {type(output_path)}.")
+    
+    if not output_path.exists():
+        output_path.mkdir(parents=True)
+    elif output_path.is_file():
+        raise TypeError(f"Expected output_path to be a directory. Instead it appears to be a file: {output_path}.")
+    
+    # Read in the image
+    reader = BioImage(image_path)
+
+    # Define the different channels
+    #img_DAPI = reader.data[0, 0, ...].squeeze()
+    img_marker = reader.data[0, 1, ...].squeeze()
+
+    # Downsample the image (if requested)
+    if (not downsample is None) and (downsample > 0):
+        img_marker = sk.transform.rescale(img_marker, downsample)
+        #img_DAPI = sk.transform.rescale(img_DAPI, downsample)
+
+    # Segment the tissue
+    tissue_mask = segment_tissue(img_marker)
+
+    tissue_mask = shrink_mask(tissue_mask, 100)
+
+    # Segment the marker
+    marker_mask = segment_marker(img_marker, tissue_mask)
+
+    # Generate the output image
+    output_img = generate_output_image(img_marker, tissue_mask, marker_mask, downsample=0.25)
+
+    # Save the output image
+    fn = image_path.stem
+    sk.io.imsave(output_path / (fn + ".png"), output_img)
+
+    # Measure the number of pixels (equiv. to area) of the tissue and marker
+    num_pixels_tissue = np.count_nonzero(tissue_mask)
+    num_pixels_marker = np.count_nonzero(marker_mask)
+    ratio = num_pixels_marker / num_pixels_tissue
+
+    return (num_pixels_marker, num_pixels_tissue, ratio)
+
+def segment_tissue(image):
+
+    # Normalize the intensity
+    image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
+
+    #Filter the image
+    image = sk.filters.gaussian(image, sigma=1.5)
+
+    mask = image > 0.010
+
+    mask = sk.morphology.remove_small_objects(mask, max_size=10000)
+    mask = ndimage.binary_fill_holes(mask)
+    
+    #mask = sk.morphology.opening(mask, sk.morphology.disk(30))
+
+    return mask
+
+def segment_marker(image, tissue_mask):
+
+    # Normalize the intensity
+    image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
+
+    thresh = sk.filters.threshold_otsu(image[tissue_mask])
+    mask = image > (0.96 * thresh)
+
+    mask = sk.morphology.remove_small_objects(mask, max_size=1000)
+    mask = ndimage.binary_fill_holes(mask)
+
+    mask[~tissue_mask] = False
+
+    return mask
+
+def shrink_mask(mask, shrink_by):
+
+    distance = ndimage.distance_transform_edt(mask)
+    mask[distance < shrink_by] = False
+
+    return mask
+
+def generate_output_image(image, tissue_mask, marker_mask, downsample=0.25):
+
+    if not downsample is None:
+        image = sk.transform.rescale(image, downsample)
+        tissue_mask = sk.transform.rescale(tissue_mask, downsample)
+        marker_mask = sk.transform.rescale(marker_mask, downsample)
+
+    image_norm = sk.exposure.equalize_hist(image)
+
+    # Insert the tissue outline
+    output_img = sk.segmentation.mark_boundaries(image_norm, tissue_mask, mode="thick", color=(0, 1, 0))
+
+    # Insert the identified marker outline
+    output_img = sk.segmentation.mark_boundaries(output_img, marker_mask, mode="thick", color=(1, 0, 1))
+
+    output_img = sk.util.img_as_ubyte(output_img)
+
+    return output_img
+
+def main():
+    # This is primarily for testing
+
+    # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-15 Dev")
+    process_directory("../data", "../processed/2026-05-15 Dev/")
+
+if __name__ == "__main__":
+    main()
