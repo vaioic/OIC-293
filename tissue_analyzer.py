@@ -101,18 +101,22 @@ def process_image(image_path, output_path, downsample=0.25):
     reader = BioImage(image_path)
 
     # Define the different channels
-    #img_DAPI = reader.data[0, 0, ...].squeeze()
+    img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
 
     # Downsample the image (if requested)
     if (not downsample is None) and (downsample > 0):
         img_marker = sk.transform.rescale(img_marker, downsample)
-        #img_DAPI = sk.transform.rescale(img_DAPI, downsample)
+        img_DAPI = sk.transform.rescale(img_DAPI, downsample)
 
     # Segment the tissue
-    tissue_mask = segment_tissue(img_marker)
+    tissue_mask = segment_tissue(img_DAPI)
 
-    tissue_mask = shrink_mask(tissue_mask, 100)
+    # ov = sk.segmentation.mark_boundaries(img_DAPI, tissue_mask, mode="thick")
+
+    # plt.imshow(ov)
+    # plt.show()
+    # exit()
 
     # Segment the marker
     marker_mask = segment_marker(img_marker, tissue_mask)
@@ -133,31 +137,54 @@ def process_image(image_path, output_path, downsample=0.25):
 
 def segment_tissue(image):
 
+    #Filter the image
+    image = sk.filters.gaussian(image, sigma=3)
+
     # Normalize the intensity
     image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
 
-    #Filter the image
-    image = sk.filters.gaussian(image, sigma=1.5)
+    thresh = sk.filters.threshold_otsu(image)
 
-    mask = image > 0.010
+    mask = image > (0.95 * thresh)
 
     mask = sk.morphology.remove_small_objects(mask, max_size=10000)
     mask = ndimage.binary_fill_holes(mask)
-    
     #mask = sk.morphology.opening(mask, sk.morphology.disk(30))
+
+    mask = sk.segmentation.clear_border(mask) 
+    
 
     return mask
 
-def segment_marker(image, tissue_mask):
+def segment_marker(image, tissue_mask, inset=100, threshold_mult=2):
+
+    # Inset the tissue mask to avoid edge effects
+    if inset is not None:
+        tissue_mask = shrink_mask(tissue_mask, inset)
 
     # Normalize the intensity
     image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
 
-    thresh = sk.filters.threshold_otsu(image[tissue_mask])
-    mask = image > (0.96 * thresh)
+    #thresh = sk.filters.threshold_otsu(image[tissue_mask])
+    #mask = image > (0.96 * thresh)
 
-    mask = sk.morphology.remove_small_objects(mask, max_size=1000)
-    mask = ndimage.binary_fill_holes(mask)
+    #thresh = np.mean(image) + (1.5 * np.std(image))
+
+    median_intensity = np.median(image)
+    diff_from_median = np.abs(image - median_intensity)
+    MAD = np.median(diff_from_median)
+
+    scaled_MAD = 1.4826 * MAD
+
+    thresh = median_intensity + (scaled_MAD)
+    mask = image > thresh
+
+    # plt.imshow(mask)
+    # plt.show()
+    # exit()
+
+    # mask = sk.morphology.remove_small_objects(mask, max_size=1000)
+    #mask = ndimage.binary_fill_holes(mask)
 
     mask[~tissue_mask] = False
 
@@ -177,13 +204,19 @@ def generate_output_image(image, tissue_mask, marker_mask, downsample=0.25):
         tissue_mask = sk.transform.rescale(tissue_mask, downsample)
         marker_mask = sk.transform.rescale(marker_mask, downsample)
 
-    image_norm = sk.exposure.equalize_hist(image)
+    #image_norm = sk.exposure.equalize_hist(image)
+    p_low, p_high = np.percentile(image, (5, 95))
+    image_norm = sk.exposure.rescale_intensity(image, in_range=(p_low, p_high), out_range=(0.0, 1.0))
 
     # Insert the tissue outline
     output_img = sk.segmentation.mark_boundaries(image_norm, tissue_mask, mode="thick", color=(0, 1, 0))
 
     # Insert the identified marker outline
-    output_img = sk.segmentation.mark_boundaries(output_img, marker_mask, mode="thick", color=(1, 0, 1))
+    output_img[..., 0] = 0.5 * output_img[..., 0] + 0.5 * marker_mask
+    output_img[..., 1] = 0.5 * output_img[..., 1]
+    output_img[..., 2] = 0.5 * output_img[..., 2] + 0.5 * marker_mask
+
+    #output_img = sk.segmentation.mark_boundaries(output_img, marker_mask, mode="thick", color=(1, 0, 1))
 
     output_img = sk.util.img_as_ubyte(output_img)
 
@@ -192,8 +225,12 @@ def generate_output_image(image, tissue_mask, marker_mask, downsample=0.25):
 def main():
     # This is primarily for testing
 
-    # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-15 Dev")
-    process_directory("../data", "../processed/2026-05-15 Dev/")
+    # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
+
+    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
+    process_directory("../data", "../processed/2026-05-18/")
+    
+    # process_directory("../data", "../processed/2026-05-15 Dev/")
 
 if __name__ == "__main__":
     main()
