@@ -6,6 +6,8 @@ import numpy as np
 import skimage as sk
 from bioio import BioImage
 from matplotlib import pyplot as plt
+from matplotlib.patches import Rectangle
+from matplotlib.widgets import RectangleSelector
 from scipy import ndimage
 
 
@@ -75,7 +77,7 @@ def get_filtered_file_list(input_dir):
     
     return final_file_list
 
-def process_image(image_path, output_path, downsample=0.25):
+def process_image(image_path, output_path, config_path=None, downsample=0.25):
 
     # Validate the inputs
     if isinstance(image_path, str):
@@ -97,12 +99,28 @@ def process_image(image_path, output_path, downsample=0.25):
     elif output_path.is_file():
         raise TypeError(f"Expected output_path to be a directory. Instead it appears to be a file: {output_path}.")
     
+    if config_path:
+        if isinstance(config_path, str):
+            config_path = Path(config_path)
+        elif isinstance(config_path, Path):
+            pass
+        else:
+            raise TypeError(f"Expected config_path to be a str or Path. Instead it is a {type(config_path)}.")
+        
+        if not config_path.is_fileI():
+            raise TypeError(f"Config file was not found at path: {config_path}.")
+        
     # Read in the image
     reader = BioImage(image_path)
 
     # Define the different channels
     img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
+
+    if not config_path:
+
+        # Get the ROI
+        rois = get_ROI(img_marker)
 
     # Downsample the image (if requested)
     if (not downsample is None) and (downsample > 0):
@@ -134,6 +152,66 @@ def process_image(image_path, output_path, downsample=0.25):
     ratio = num_pixels_marker / num_pixels_tissue
 
     return (num_pixels_marker, num_pixels_tissue, ratio)
+
+def get_ROI(image):
+
+    all_rois = []
+    current_coords = None  # Holds the unsaved box coordinates
+
+    def onselect(eclick, erelease):
+        """Updates the temporary coordinates whenever a box is drawn/resized."""
+        global current_coords
+        xmin, xmax = int(min(eclick.xdata, erelease.xdata)), int(max(eclick.xdata, erelease.xdata))
+        ymin, ymax = int(min(eclick.ydata, erelease.ydata)), int(max(eclick.ydata, erelease.ydata))
+        current_coords = (xmin, xmax, ymin, ymax)
+
+    def on_key(event):
+        """Listens for keyboard inputs."""
+        global current_coords
+        
+        if event.key == 'enter':
+            if current_coords is not None:
+                xmin, xmax, ymin, ymax = current_coords
+                
+                # 1. Save the coordinates permanently
+                roi = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
+                all_rois.append(roi)
+                print(f"Saved ROI #{len(all_rois)}: {roi}")
+                
+                # 2. Draw a permanent visual patch on the image
+                width = xmax - xmin
+                height = ymax - ymin
+                rect = Rectangle((xmin, ymin), width, height, edgecolor='red', facecolor='none', linewidth=2)
+                ax.add_patch(rect)
+                
+                # 3. Refresh the plot to show the new permanent patch
+                fig.canvas.draw()
+                
+                # Reset temporary storage so we don't duplicate on double-enter
+                current_coords = None 
+            else:
+                print("No new ROI drawn to save!")
+
+    # Downsize the image for easier viewing
+    image_ds = sk.transform.rescale(image, 0.25)
+
+    fig, ax = plt.subplots()
+    ax.imshow(image_ds, cmap="gray")
+
+    fig.canvas.mpl_connect('key_press_event', on_key)
+
+    # Enable the selector
+    rs = RectangleSelector(ax, onselect, useblit=True,
+                           button=[1], interactive=True)
+
+    plt.show()
+    print(f"\nFinal saved ROIs count: {len(all_rois)}")
+    # with open("multiple_rois.txt", "w") as f:
+    #     for i, roi in enumerate(all_rois):
+    #         f.write(f"ROI_{i}:{roi['xmin']},{roi['xmax']},{roi['ymin']},{roi['ymax']}\n")
+
+    return all_rois 
+
 
 def segment_tissue(image):
 
@@ -227,8 +305,8 @@ def main():
 
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
-    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
-    process_directory("../data", "../processed/2026-05-18/")
+    process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
+    # process_directory("../data", "../processed/2026-05-18/")
     
     # process_directory("../data", "../processed/2026-05-15 Dev/")
 
