@@ -1,5 +1,7 @@
 import csv
+import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +14,27 @@ from scipy import ndimage
 
 
 def process_directory(input_dir, output_dir):
+    """
+    Process a directory of images
+
+    Parameters
+    ----------
+    input_dir : str or Path
+        Path to the directory containing images to analyze
+    output_dir : str or Path
+        Path to the directory where output data will be saved
+
+    Raises
+    ------
+    TypeError
+        The input_dir must be a str or Path
+    TypeError
+        The input_dir appears to be a file instead of a directory path
+    TypeError
+        The output_dir must be a str or Path
+    TypeError
+        The output_dir appears to be a file instead of a directory path    
+    """
 
     # Validate the inputs
     if isinstance(input_dir, str):
@@ -38,7 +61,6 @@ def process_directory(input_dir, output_dir):
     elif output_dir.is_file():
         raise TypeError(f"Expected output_dir to be a directory. Instead it appears to be a file: {output_dir}.")
     
-
     with open(output_dir / "measurements.csv", "w", newline="") as csvfile:
 
         # Write CSV headers
@@ -54,6 +76,21 @@ def process_directory(input_dir, output_dir):
             csvwriter.writerow([f.name, num_pixels_marker, num_pixels_tissue, ratio])    
 
 def get_filtered_file_list(input_dir):
+    """
+    Get a filtered file list.
+
+    The dataset sometimes includes duplicate files. This function filters the dataset to avoid processing duplicate samples. In particular, if it encounters a filename with the suffix "-rescan", it keep this version over the original. The function also handles duplicate files if the filenames are in a different case.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Path to directory containing images to analyze
+
+    Returns
+    -------
+    filtered_file_list : list of Path
+        The final filtered list of files
+    """
 
     file_list = input_dir.glob("*.czi")
 
@@ -73,11 +110,38 @@ def get_filtered_file_list(input_dir):
             filtered_files[key] = f
 
     # Extract the final list of Path objects
-    final_file_list = list(filtered_files.values())
+    filtered_file_list = list(filtered_files.values())
     
-    return final_file_list
+    return filtered_file_list
 
-def process_image(image_path, output_path, config_path=None, downsample=0.25):
+def process_image(image_path, output_path, config_path=None, downsample=None, tissue_threshold=None):
+    """
+    Process an image
+
+    Parameters
+    ----------
+    image_path : str or Path
+        Path to the image file
+    output_path : str or Path
+        Path to directory to save data
+    config_path : str or Path, optional
+        Path to configuration file, by default None
+    downsample : float, optional
+        If set, the images are downsampled by this value, by default None
+
+    Raises
+    ------
+    TypeError
+        _description_
+    TypeError
+        _description_
+    TypeError
+        _description_
+    TypeError
+        _description_
+    TypeError
+        _description_
+    """
 
     # Validate the inputs
     if isinstance(image_path, str):
@@ -99,6 +163,8 @@ def process_image(image_path, output_path, config_path=None, downsample=0.25):
     elif output_path.is_file():
         raise TypeError(f"Expected output_path to be a directory. Instead it appears to be a file: {output_path}.")
     
+    roi_list = []  # Initialize an empty list of ROIs to process
+
     if config_path:
         if isinstance(config_path, str):
             config_path = Path(config_path)
@@ -107,9 +173,19 @@ def process_image(image_path, output_path, config_path=None, downsample=0.25):
         else:
             raise TypeError(f"Expected config_path to be a str or Path. Instead it is a {type(config_path)}.")
         
-        if not config_path.is_fileI():
+        if not config_path.is_file():
             raise TypeError(f"Config file was not found at path: {config_path}.")
         
+        # Load the configuration file
+        with open(config_path, "r") as cf:
+            config = json.load(cf)
+
+        roi_list = config["rois"]
+        downsample = config["settings"]["downsample"]
+
+        print("Loaded configuration file.")
+        print(roi_list)
+
     # Read in the image
     reader = BioImage(image_path)
 
@@ -117,74 +193,122 @@ def process_image(image_path, output_path, config_path=None, downsample=0.25):
     img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
 
-    if not config_path:
+    # Rescale image intensity for downstream processing
+    img_DAPI_norm = sk.exposure.rescale_intensity(img_DAPI, out_range=(0.0, 1.0))
+    img_marker_norm = sk.exposure.rescale_intensity(img_marker, out_range=(0.0, 1.0))
 
-        # Get the ROI
-        rois = get_ROI(img_marker)
+    print("Getting threshold")
+    if not tissue_threshold:
 
-    # Downsample the image (if requested)
-    if (not downsample is None) and (downsample > 0):
-        img_marker = sk.transform.rescale(img_marker, downsample)
-        img_DAPI = sk.transform.rescale(img_DAPI, downsample)
+        # Estimate a threshold value for the tissue
+        tissue_threshold = get_threshold(img_marker_norm)
+        print(f"Estimated threshold value: {tissue_threshold}")
+    else:
+        print(tissue_threshold)
+        exit()
 
+    if not roi_list:
+
+        # Get ROIs to process
+        roi_list = get_ROI(img_marker)
+
+    for roi in roi_list:
+
+        # Index the ROI
+        roi_DAPI = img_DAPI_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
+        roi_marker = img_marker_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
+
+        process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample)
+
+
+    # # Save the outputs
+    fn = image_path.stem  # Prefix for saved files
+
+    # # Generate the output image
+    # output_img = generate_output_image(img_marker, tissue_mask, marker_mask, downsample=0.25)
+
+    # # Save the output image
+    # sk.io.imsave(output_path / (fn + ".png"), output_img)
+
+    # Save processing configuration
+    config_data = {
+        "metadata": {
+            "date_created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "file": str(image_path),
+            "config_version": "1.0"
+        },
+        "settings": {
+            "downsample": downsample
+        },
+        "rois": roi_list
+    }
+
+    with open(output_path / (fn + "_config.json"), "w") as cf:
+        json.dump(config_data, cf, indent=4)
+
+    print(f"File saved to {str(output_path / (fn + '_config.json'))}")
+
+    # # Measure the number of pixels (equiv. to area) of the tissue and marker
+    # num_pixels_tissue = np.count_nonzero(tissue_mask)
+    # num_pixels_marker = np.count_nonzero(marker_mask)
+    # ratio = num_pixels_marker / num_pixels_tissue
+
+    # return (num_pixels_marker, num_pixels_tissue, ratio)
+
+def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None):
+
+    # # Downsample the image (if requested)
+    # if (not downsample is None) and (downsample > 0):
+    #     img_marker = sk.transform.rescale(img_marker, downsample)
+    #     img_DAPI = sk.transform.rescale(img_DAPI, downsample)
+        
     # Segment the tissue
-    tissue_mask = segment_tissue(img_DAPI)
+    tissue_mask = segment_tissue(img_marker, threshold=threshold)
 
-    # ov = sk.segmentation.mark_boundaries(img_DAPI, tissue_mask, mode="thick")
+    # ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_adapthist(img_marker), tissue_mask, mode="thick")
 
-    # plt.imshow(ov)
-    # plt.show()
-    # exit()
+    plt.imshow(tissue_mask)
+    plt.show()
+    exit()
 
     # Segment the marker
     marker_mask = segment_marker(img_marker, tissue_mask)
 
-    # Generate the output image
-    output_img = generate_output_image(img_marker, tissue_mask, marker_mask, downsample=0.25)
 
-    # Save the output image
-    fn = image_path.stem
-    sk.io.imsave(output_path / (fn + ".png"), output_img)
 
-    # Measure the number of pixels (equiv. to area) of the tissue and marker
-    num_pixels_tissue = np.count_nonzero(tissue_mask)
-    num_pixels_marker = np.count_nonzero(marker_mask)
-    ratio = num_pixels_marker / num_pixels_tissue
-
-    return (num_pixels_marker, num_pixels_tissue, ratio)
-
-def get_ROI(image):
+def get_ROI(image, downsample_factor=8):
 
     all_rois = []
     current_coords = None  # Holds the unsaved box coordinates
 
     def onselect(eclick, erelease):
         """Updates the temporary coordinates whenever a box is drawn/resized."""
-        global current_coords
+        nonlocal current_coords
+        
         xmin, xmax = int(min(eclick.xdata, erelease.xdata)), int(max(eclick.xdata, erelease.xdata))
         ymin, ymax = int(min(eclick.ydata, erelease.ydata)), int(max(eclick.ydata, erelease.ydata))
         current_coords = (xmin, xmax, ymin, ymax)
 
     def on_key(event):
         """Listens for keyboard inputs."""
-        global current_coords
-        
+        nonlocal current_coords
+                
         if event.key == 'enter':
             if current_coords is not None:
                 xmin, xmax, ymin, ymax = current_coords
                 
-                # 1. Save the coordinates permanently
+                # Save the coordinates as a dict
                 roi = {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax}
                 all_rois.append(roi)
-                print(f"Saved ROI #{len(all_rois)}: {roi}")
+                print(f"ROI #{len(all_rois)}: {roi}")
                 
-                # 2. Draw a permanent visual patch on the image
+                # Draw a rectangle on the image
                 width = xmax - xmin
                 height = ymax - ymin
-                rect = Rectangle((xmin, ymin), width, height, edgecolor='red', facecolor='none', linewidth=2)
+                rect = Rectangle((xmin, ymin), width, height, edgecolor='green', facecolor='none', linewidth=1)
                 ax.add_patch(rect)
                 
-                # 3. Refresh the plot to show the new permanent patch
+                # Refresh the plot to show the new permanent patch
                 fig.canvas.draw()
                 
                 # Reset temporary storage so we don't duplicate on double-enter
@@ -193,10 +317,12 @@ def get_ROI(image):
                 print("No new ROI drawn to save!")
 
     # Downsize the image for easier viewing
-    image_ds = sk.transform.rescale(image, 0.25)
+    if downsample_factor:
+        image = image[::downsample_factor, ::downsample_factor]
 
-    fig, ax = plt.subplots()
-    ax.imshow(image_ds, cmap="gray")
+    fig, ax = plt.subplots(figsize=(12, 10))
+    ax.imshow(sk.exposure.equalize_hist(image), cmap="gray")
+    ax.set_title("Drag to resize and move the selection. Press enter to create an ROI. Close image when done.")
 
     fig.canvas.mpl_connect('key_press_event', on_key)
 
@@ -205,32 +331,57 @@ def get_ROI(image):
                            button=[1], interactive=True)
 
     plt.show()
-    print(f"\nFinal saved ROIs count: {len(all_rois)}")
-    # with open("multiple_rois.txt", "w") as f:
-    #     for i, roi in enumerate(all_rois):
-    #         f.write(f"ROI_{i}:{roi['xmin']},{roi['xmax']},{roi['ymin']},{roi['ymax']}\n")
 
-    return all_rois 
+    # Rescale the ROIs by the downsample factor
+    if downsample_factor:
 
+        final_roi_list = [
+            {
+                "xmin": roi["xmin"] * downsample_factor,
+                "xmax": roi["xmax"] * downsample_factor,
+                "ymin": roi["ymin"] * downsample_factor,
+                "ymax": roi["ymax"] * downsample_factor,
+            }
+            for roi in all_rois
+        ]
 
-def segment_tissue(image):
+    else:
+        final_roi_list = all_rois
+
+    return final_roi_list
+
+def get_threshold(image):
 
     #Filter the image
-    image = sk.filters.gaussian(image, sigma=3)
+    # image = sk.filters.gaussian(image, sigma=3)
 
-    # Normalize the intensity
-    image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
+    # # Normalize the intensity
+    # Imax = np.max(image)
+    # Imin = np.min(image)
 
+    # image = image.astype(np.float32)
+    # image = (image - Imin) / (Imax - Imin)
+    # #image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
     thresh = sk.filters.threshold_otsu(image)
+   
+    return thresh
 
-    mask = image > (0.95 * thresh)
+def segment_tissue(image, threshold):
+
+    #Filter the image
+    #image = sk.filters.gaussian(image, sigma=3)
+
+
+    if not threshold:
+        thresh = get_threshold(image)
+
+    mask = image > threshold
 
     mask = sk.morphology.remove_small_objects(mask, max_size=10000)
-    mask = ndimage.binary_fill_holes(mask)
+    #mask = ndimage.binary_fill_holes(mask)
     #mask = sk.morphology.opening(mask, sk.morphology.disk(30))
 
-    mask = sk.segmentation.clear_border(mask) 
-    
+    #mask = sk.segmentation.clear_border(mask)     
 
     return mask
 
@@ -305,7 +456,8 @@ def main():
 
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
-    process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
+    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
+     process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev", "../processed/2026-05-18 Dev/10390_Plin2_config.json")
     # process_directory("../data", "../processed/2026-05-18/")
     
     # process_directory("../data", "../processed/2026-05-15 Dev/")
