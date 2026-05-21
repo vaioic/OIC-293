@@ -219,7 +219,7 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         roi_DAPI = img_DAPI_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
         roi_marker = img_marker_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
 
-        process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample)
+        process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample, marker_threshold_factor=7)
 
 
     # # Save the outputs
@@ -256,7 +256,7 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
 
     # return (num_pixels_marker, num_pixels_tissue, ratio)
 
-def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None):
+def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None, marker_threshold_factor=3):
 
     # Downsample the image (if requested)
     if (not downsample is None) and (downsample > 0):
@@ -270,18 +270,69 @@ def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None):
         raise ValueError(f"No tissue section was found.")
     
     # Segment the marker
-    marker_mask = segment_marker(img_marker, tissue_mask)
+    marker_mask = segment_marker(img_marker, tissue_mask, threshold_mult=marker_threshold_factor)
 
-        # ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_adapthist(img_marker), tissue_mask, mode="thick")
+    # Identify nuclei
+    nuclear_mask = detect_nuclei(img_DAPI)
 
-    plt.imshow(img_marker)
+    ov = sk.segmentation.mark_boundaries(img_DAPI, nuclear_mask)
+
+    plt.imshow(ov)
     plt.show()
 
-    plt.imshow(marker_mask)
+
+def detect_nuclei(image):
+
+    image = sk.filters.gaussian(image, 2)
+
+    threshold = sk.filters.threshold_otsu(image)
+
+    mask = image > threshold
+
+    mask = sk.morphology.remove_small_holes(mask, max_size=500)
+
+    # plt.imshow(mask)
+    # plt.show()
+
+    # exit()
+
+    # Find centers for watershed
+    blobs = sk.feature.blob_log(image, min_sigma=12, max_sigma=30, threshold=0.000005)
+
+    markers = np.zeros_like(mask, dtype=np.float32)
+
+    print(len(blobs))
+
+    for idx, blob in enumerate(blobs):
+        y, x, c = blob
+        markers[int(y), int(x)] = idx + 1
+
+    # plt.imshow(markers_mask)
+    # plt.show()
+    # exit()
+
+    # markers = ndimage.label(markers_mask)
+
+    # plt.imshow(markers)
+    # plt.show()
+    # exit()
+
+    dd = ndimage.distance_transform_edt(mask)
+    labels = sk.segmentation.watershed(-dd, markers)
+
+    plt.imshow(labels)
     plt.show()
-    exit()
 
+    # ax = plt.subplot(1, 1, 1)
+    # ax.imshow(image)
 
+    # for idx, blob in enumerate(blobs):
+    #     y, x, r = blob
+    #     c = plt.Circle((x, y), r, color=(1, 0, 1), linewidth=1, fill=False)
+    #     ax.add_patch(c)
+    # ax.set_axis_off()
+
+    # plt.show()
 
 def get_ROI(image, downsample_factor=8):
 
