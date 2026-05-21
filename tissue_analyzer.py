@@ -193,28 +193,29 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
     img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
 
+    # TEMP:
+    img_DAPI = img_DAPI[::8, ::8]
+    img_marker = img_marker[::8, ::8]
+
     # Rescale image intensity for downstream processing
     img_DAPI_norm = sk.exposure.rescale_intensity(img_DAPI, out_range=(0.0, 1.0))
     img_marker_norm = sk.exposure.rescale_intensity(img_marker, out_range=(0.0, 1.0))
 
-    print("Getting threshold")
     if not tissue_threshold:
-
-        # Estimate a threshold value for the tissue
+        # If the tissue_threshold value was not previously in the configuration file, estimate a new threshold
+        print(f"Estimating tissue threshold value.")
         tissue_threshold = get_threshold(img_marker_norm)
-        print(f"Estimated threshold value: {tissue_threshold}")
-    else:
-        print(tissue_threshold)
-        exit()
 
     if not roi_list:
+        # If no ROIs were provided in the configuration file, prompt the user to select some
 
         # Get ROIs to process
         roi_list = get_ROI(img_marker)
 
+    # Parse each ROI to measure marked area
     for roi in roi_list:
 
-        # Index the ROI
+        # Index the sub-images
         roi_DAPI = img_DAPI_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
         roi_marker = img_marker_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
 
@@ -257,22 +258,28 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
 
 def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None):
 
-    # # Downsample the image (if requested)
-    # if (not downsample is None) and (downsample > 0):
-    #     img_marker = sk.transform.rescale(img_marker, downsample)
-    #     img_DAPI = sk.transform.rescale(img_DAPI, downsample)
+    # Downsample the image (if requested)
+    if (not downsample is None) and (downsample > 0):
+        img_marker = sk.transform.rescale(img_marker, downsample)
+        img_DAPI = sk.transform.rescale(img_DAPI, downsample)
         
     # Segment the tissue
     tissue_mask = segment_tissue(img_marker, threshold=threshold)
 
-    # ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_adapthist(img_marker), tissue_mask, mode="thick")
-
-    plt.imshow(tissue_mask)
-    plt.show()
-    exit()
-
+    if not np.any(tissue_mask):
+        raise ValueError(f"No tissue section was found.")
+    
     # Segment the marker
     marker_mask = segment_marker(img_marker, tissue_mask)
+
+        # ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_adapthist(img_marker), tissue_mask, mode="thick")
+
+    plt.imshow(img_marker)
+    plt.show()
+
+    plt.imshow(marker_mask)
+    plt.show()
+    exit()
 
 
 
@@ -320,8 +327,10 @@ def get_ROI(image, downsample_factor=8):
     if downsample_factor:
         image = image[::downsample_factor, ::downsample_factor]
 
+    image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
+
     fig, ax = plt.subplots(figsize=(12, 10))
-    ax.imshow(sk.exposure.equalize_hist(image), cmap="gray")
+    ax.imshow(image, cmap="gray")
     ax.set_title("Drag to resize and move the selection. Press enter to create an ROI. Close image when done.")
 
     fig.canvas.mpl_connect('key_press_event', on_key)
@@ -352,16 +361,6 @@ def get_ROI(image, downsample_factor=8):
 
 def get_threshold(image):
 
-    #Filter the image
-    # image = sk.filters.gaussian(image, sigma=3)
-
-    # # Normalize the intensity
-    # Imax = np.max(image)
-    # Imin = np.min(image)
-
-    # image = image.astype(np.float32)
-    # image = (image - Imin) / (Imax - Imin)
-    # #image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
     thresh = sk.filters.threshold_otsu(image)
    
     return thresh
@@ -385,7 +384,7 @@ def segment_tissue(image, threshold):
 
     return mask
 
-def segment_marker(image, tissue_mask, inset=100, threshold_mult=2):
+def segment_marker(image, tissue_mask, inset=None, threshold_mult=7):
 
     # Inset the tissue mask to avoid edge effects
     if inset is not None:
@@ -405,14 +404,14 @@ def segment_marker(image, tissue_mask, inset=100, threshold_mult=2):
 
     scaled_MAD = 1.4826 * MAD
 
-    thresh = median_intensity + (scaled_MAD)
+    thresh = median_intensity + (threshold_mult * scaled_MAD)
     mask = image > thresh
 
     # plt.imshow(mask)
     # plt.show()
     # exit()
 
-    # mask = sk.morphology.remove_small_objects(mask, max_size=1000)
+    mask = sk.morphology.remove_small_objects(mask, max_size=20)
     #mask = ndimage.binary_fill_holes(mask)
 
     mask[~tissue_mask] = False
@@ -457,9 +456,8 @@ def main():
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
     #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
-     process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev", "../processed/2026-05-18 Dev/10390_Plin2_config.json")
-    # process_directory("../data", "../processed/2026-05-18/")
-    
+    process_image("../data/10390_Plin2.czi", "../processed/2026-05-21 Dev")
+    # process_directory("../data", "../processed/2026-05-18/")    
     # process_directory("../data", "../processed/2026-05-15 Dev/")
 
 if __name__ == "__main__":
