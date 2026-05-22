@@ -246,6 +246,7 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         roi_list = get_ROI(img_marker)
 
     # Parse each ROI to measure marked area
+    fn = image_path.stem
     all_data = []
     for idx, roi in enumerate(roi_list):
 
@@ -284,14 +285,15 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
                                                   mode="thick", 
                                                   color=(1, 0, 1))
         
-        sk.io.imsave(output_path / ("roi" + f"{idx}" + "_masks.png"), sk.util.img_as_ubyte(ov_mask))
+        sk.io.imsave(output_path / (fn + "_roi" + f"{idx}" + "_masks.png"), sk.util.img_as_ubyte(ov_mask))
 
         # Mark the nuclei
         ov_nucl = sk.segmentation.mark_boundaries(
             roi_DAPI,
             nucl_labels)
         
-        plt.imshow(ov_nucl)
+        fig, ax = plt.subplots(figsize=(10, 12))
+        ax.imshow(ov_nucl)
 
         # Get positions of nuclei
         xx = []
@@ -303,12 +305,13 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
             xx.append(x)
             yy.append(y)
 
-        plt.scatter(xx, yy, 1)
-        plt.savefig(output_path / ("roi" + f"{idx}" + "_nucl.png"))
+        ax.scatter(xx, yy, 1)
+        plt.savefig(output_path / (fn + "_roi" + f"{idx}" + "_nucl.png"),
+                    dpi=300, bbox_inches="tight")
                                                 
         
     # # Save the outputs
-    fn = image_path.stem  # Prefix for saved files
+      # Prefix for saved files
 
     # # Generate the output image
     # output_img = generate_output_image(img_marker, tissue_mask, marker_mask, downsample=0.25)
@@ -404,28 +407,29 @@ def detect_nuclei(image):
 
     threshold = sk.filters.threshold_otsu(image)
 
-    mask = image > (threshold)
+    mask = image > (1.1 * threshold)
     mask = sk.morphology.remove_small_holes(mask, max_size=500)
 
     # Find centers for watershed
     blobs = sk.feature.blob_log(image, min_sigma=12, max_sigma=30, threshold=0.000005)
-
-    # Filter the blobs by intensity to 
 
     # Make the markers
     markers = np.zeros_like(mask, dtype=np.int32)
 
     for idx, blob in enumerate(blobs):
         y, x, c = blob
-        markers[int(y), int(x)] = idx + 1
+
+        # Only include markers that are significantly bright
+        if image[int(y), int(x)] > threshold:
+            markers[int(y), int(x)] = idx + 1
 
     dd = ndimage.distance_transform_edt(mask)
     labels = sk.segmentation.watershed(-dd, markers, mask=mask, compactness=0.5)
 
     ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_hist(image), labels)
 
-    plt.imshow(ov)
-    plt.show()
+    # plt.imshow(ov)
+    # plt.show()
 
     return blobs, labels
 
@@ -602,7 +606,7 @@ def main():
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
     #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
-    process_image("../data/10390_Plin2.czi", "../processed/2026-05-22 Dev")
+    process_image("../data/cropped_for_testing/10389_Plin2_Quarter.czi", "../processed/2026-05-22 Dev")
     # process_directory("../data", "../processed/2026-05-18/")    
     # process_directory("../data", "../processed/2026-05-15 Dev/")
 
