@@ -114,7 +114,7 @@ def get_filtered_file_list(input_dir):
     
     return filtered_file_list
 
-def process_image(image_path, output_path, config_path=None, downsample=None, tissue_threshold=None):
+def process_image(image_path, output_path, config_path=None, downsample=None, tissue_threshold=None, tissue_type="auto"):
     """
     Process an image
 
@@ -193,9 +193,9 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
     img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
 
-    # TEMP:
-    img_DAPI = img_DAPI[::8, ::8]
-    img_marker = img_marker[::8, ::8]
+    # # TEMP:
+    # img_DAPI = img_DAPI[::8, ::8]
+    # img_marker = img_marker[::8, ::8]
 
     # Rescale image intensity for downstream processing
     img_DAPI_norm = sk.exposure.rescale_intensity(img_DAPI, out_range=(0.0, 1.0))
@@ -206,6 +206,39 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         print(f"Estimating tissue threshold value.")
         tissue_threshold = get_threshold(img_marker_norm)
 
+    # Look at tissue type to determine threshold factor
+    if (not tissue_type) or (tissue_type.lower() == "auto"):
+
+        print(f"Getting tissue type")
+
+        # Get tissue type from filename
+        fn = (image_path.stem).lower()
+
+        if "calnexin" in fn:
+            tissue_type = "er"
+        elif "plin2" in fn:
+            tissue_type = "lipid"
+        elif "tom20" in fn:
+            tissue_type = "mito"
+        else:
+            raise ValueError(f"Could not determine tissue type from filename. Please specify it directly.")
+        
+    print(f"Tissue type: {tissue_type}")
+            
+    match tissue_type.lower():
+
+        case "er" | "lipid":
+            marker_threshold_factor = 7
+        
+        case "mito":
+            marker_threshold_factor = 12
+
+        case _:
+            raise ValueError(f"Could not determine marker threshold factor for unknown tissue type.")
+   
+    print(f"Threshold factor: {marker_threshold_factor}")
+    # exit()
+
     if not roi_list:
         # If no ROIs were provided in the configuration file, prompt the user to select some
 
@@ -213,15 +246,67 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         roi_list = get_ROI(img_marker)
 
     # Parse each ROI to measure marked area
-    for roi in roi_list:
+    all_data = []
+    for idx, roi in enumerate(roi_list):
 
         # Index the sub-images
         roi_DAPI = img_DAPI_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
         roi_marker = img_marker_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
 
-        process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample, marker_threshold_factor=7)
+        data, tissue_mask, marker_mask, nucl_detections, nucl_labels = process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample, marker_threshold_factor=marker_threshold_factor)
 
+        # Add ROI metadata
+        data["filename"] = str(image_path)
+        data["ROI_xmin"] = roi["xmin"]
+        data["ROI_xmax"] = roi["xmax"]
+        data["ROI_ymin"] = roi["ymin"]
+        data["ROI_ymax"] = roi["ymax"]
 
+        all_data.append(data)
+        
+        # Generate and save output images
+        rgb_img = np.zeros((roi_DAPI.shape[0], roi_DAPI.shape[1], 3))
+
+        # Normalize the intensities
+        roi_marker = sk.exposure.rescale_intensity(roi_marker, out_range=(0.0, 1.0))
+        roi_DAPI = sk.exposure.rescale_intensity(roi_DAPI, out_range=(0.0, 1.0))
+
+        rgb_img[..., 0] = roi_marker
+        rgb_img[..., 1] = roi_marker
+        rgb_img[..., 2] = roi_DAPI
+
+        # plt.imshow(rgb_img)
+        # plt.show()
+
+        ov_mask = sk.segmentation.mark_boundaries(rgb_img, tissue_mask, 
+                                                mode="thick", color=(0, 1, 0))
+        ov_mask = sk.segmentation.mark_boundaries(ov_mask, marker_mask, 
+                                                  mode="thick", 
+                                                  color=(1, 0, 1))
+        
+        sk.io.imsave(output_path / ("roi" + f"{idx}" + "_masks.png"), sk.util.img_as_ubyte(ov_mask))
+
+        # Mark the nuclei
+        ov_nucl = sk.segmentation.mark_boundaries(
+            roi_DAPI,
+            nucl_labels)
+        
+        plt.imshow(ov_nucl)
+
+        # Get positions of nuclei
+        xx = []
+        yy = []
+
+        for d in nucl_detections:
+
+            y, x, _ = d
+            xx.append(x)
+            yy.append(y)
+
+        plt.scatter(xx, yy, 1)
+        plt.savefig(output_path / ("roi" + f"{idx}" + "_nucl.png"))
+                                                
+        
     # # Save the outputs
     fn = image_path.stem  # Prefix for saved files
 
@@ -230,6 +315,23 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
 
     # # Save the output image
     # sk.io.imsave(output_path / (fn + ".png"), output_img)
+
+    # Save data
+    all_keys = set().union(*(d.keys() for d in all_data))
+
+    headers = ["filename", "ROI_xmin", "ROI_xmax", "ROI_ymin", "ROI_ymax"]
+
+    # Automatically append the rest of the keys
+    for key in sorted(all_keys):
+        if key not in headers:
+            headers.append(key)
+    
+    with open(output_path / (fn + "_data.csv"), mode="w", newline="", encoding="utf-8") as file:
+            
+        writer = csv.DictWriter(file, fieldnames=headers)
+        
+        writer.writeheader()  # Writes the first row (column names)
+        writer.writerows(all_data)  # Writes all rows of data
 
     # Save processing configuration
     config_data = {
@@ -247,7 +349,7 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
     with open(output_path / (fn + "_config.json"), "w") as cf:
         json.dump(config_data, cf, indent=4)
 
-    print(f"File saved to {str(output_path / (fn + '_config.json'))}")
+    print(f"Config file saved to {str(output_path / (fn + '_config.json'))}")
 
     # # Measure the number of pixels (equiv. to area) of the tissue and marker
     # num_pixels_tissue = np.count_nonzero(tissue_mask)
@@ -272,14 +374,29 @@ def process_ROI(img_DAPI, img_marker, threshold=None, downsample=None, marker_th
     # Segment the marker
     marker_mask = segment_marker(img_marker, tissue_mask, threshold_mult=marker_threshold_factor)
 
-    # Identify nuclei
-    nuclear_mask = detect_nuclei(img_DAPI)
+    # Identify nuclei - Detections are likely more accurate for number of nuclei, as some do not show up in the labels
+    nucl_detections, nucl_labels = detect_nuclei(img_DAPI)
 
-    ov = sk.segmentation.mark_boundaries(img_DAPI, nuclear_mask)
+    nucl_props = sk.measure.regionprops_table(
+        nucl_labels, 
+        properties=["area", "eccentricity"]
+    )
 
-    plt.imshow(ov)
-    plt.show()
+    # Measure data
+    data = {
+        "num_nuclei": len(nucl_detections),
+        "mean_nuclear_area": np.mean(nucl_props["area"]),
+        "mean_nuclear_circularity": np.mean(nucl_props["eccentricity"]),
+        "total_tissue_area": np.count_nonzero(tissue_mask),
+        "total_marker_area": np.count_nonzero(marker_mask),
+        "ratio_areas": np.count_nonzero(marker_mask) / np.count_nonzero(tissue_mask)
+    }
 
+    # ov = sk.segmentation.mark_boundaries(img_DAPI, nuclear_mask)
+
+    # plt.imshow(ov)
+    # plt.show()
+    return data, tissue_mask, marker_mask, nucl_detections, nucl_labels
 
 def detect_nuclei(image):
 
@@ -287,52 +404,30 @@ def detect_nuclei(image):
 
     threshold = sk.filters.threshold_otsu(image)
 
-    mask = image > threshold
-
+    mask = image > (threshold)
     mask = sk.morphology.remove_small_holes(mask, max_size=500)
-
-    # plt.imshow(mask)
-    # plt.show()
-
-    # exit()
 
     # Find centers for watershed
     blobs = sk.feature.blob_log(image, min_sigma=12, max_sigma=30, threshold=0.000005)
 
-    markers = np.zeros_like(mask, dtype=np.float32)
+    # Filter the blobs by intensity to 
 
-    print(len(blobs))
+    # Make the markers
+    markers = np.zeros_like(mask, dtype=np.int32)
 
     for idx, blob in enumerate(blobs):
         y, x, c = blob
         markers[int(y), int(x)] = idx + 1
 
-    # plt.imshow(markers_mask)
-    # plt.show()
-    # exit()
-
-    # markers = ndimage.label(markers_mask)
-
-    # plt.imshow(markers)
-    # plt.show()
-    # exit()
-
     dd = ndimage.distance_transform_edt(mask)
-    labels = sk.segmentation.watershed(-dd, markers)
+    labels = sk.segmentation.watershed(-dd, markers, mask=mask, compactness=0.5)
 
-    plt.imshow(labels)
+    ov = sk.segmentation.mark_boundaries(sk.exposure.equalize_hist(image), labels)
+
+    plt.imshow(ov)
     plt.show()
 
-    # ax = plt.subplot(1, 1, 1)
-    # ax.imshow(image)
-
-    # for idx, blob in enumerate(blobs):
-    #     y, x, r = blob
-    #     c = plt.Circle((x, y), r, color=(1, 0, 1), linewidth=1, fill=False)
-    #     ax.add_patch(c)
-    # ax.set_axis_off()
-
-    # plt.show()
+    return blobs, labels
 
 def get_ROI(image, downsample_factor=8):
 
@@ -410,9 +505,9 @@ def get_ROI(image, downsample_factor=8):
 
     return final_roi_list
 
-def get_threshold(image):
+def get_threshold(image, ds=16):
 
-    thresh = sk.filters.threshold_otsu(image)
+    thresh = sk.filters.threshold_otsu(image[::ds, ::ds])
    
     return thresh
 
@@ -507,7 +602,7 @@ def main():
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
     #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
-    process_image("../data/10390_Plin2.czi", "../processed/2026-05-21 Dev")
+    process_image("../data/10390_Plin2.czi", "../processed/2026-05-22 Dev")
     # process_directory("../data", "../processed/2026-05-18/")    
     # process_directory("../data", "../processed/2026-05-15 Dev/")
 
