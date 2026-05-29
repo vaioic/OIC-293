@@ -308,6 +308,7 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         ax.scatter(xx, yy, 1)
         plt.savefig(output_path / (fn + "_roi" + f"{idx}" + "_nucl.png"),
                     dpi=300, bbox_inches="tight")
+        plt.close()
                                                 
         
     # # Save the outputs
@@ -477,7 +478,7 @@ def get_ROI(image, downsample_factor=8):
     if downsample_factor:
         image = image[::downsample_factor, ::downsample_factor]
 
-    image = sk.exposure.rescale_intensity(image, out_range=(0.0, 1.0))
+    image = sk.exposure.rescale_intensity(image, in_range=(np.min(image), 0.5 * np.max(image)), out_range=(0.0, 1.0))
 
     fig, ax = plt.subplots(figsize=(12, 10))
     ax.imshow(image, cmap="gray")
@@ -527,6 +528,7 @@ def segment_tissue(image, threshold):
     mask = image > threshold
 
     mask = sk.morphology.remove_small_objects(mask, max_size=10000)
+    mask = sk.morphology.remove_small_oholes(mask, max_size=5000)    
     #mask = ndimage.binary_fill_holes(mask)
     #mask = sk.morphology.opening(mask, sk.morphology.disk(30))
 
@@ -605,8 +607,12 @@ def main():
 
     # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
 
-    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-18 Dev")
-    process_image("../data/cropped_for_testing/10389_Plin2_Quarter.czi", "../processed/2026-05-22 Dev")
+    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-29 Dev")
+    # process_image("../data/10390_TOM20.czi", "../processed/2026-05-29 Dev")
+    # process_image("../data/10390_Calnexis-rescan.czi", "../processed/2026-05-29 Dev")
+    process_image("../data/10402_Plin2.czi", "../processed/2026-05-29 Dev")
+    process_image("../data/10403_Plin2-rescan.czi", "../processed/2026-05-29 Dev")
+    # process_image("../data/cropped_for_testing/10389_Plin2_Quarter.czi", "../processed/2026-05-22 Dev")
     # process_directory("../data", "../processed/2026-05-18/")    
     # process_directory("../data", "../processed/2026-05-15 Dev/")
 
