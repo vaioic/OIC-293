@@ -478,10 +478,11 @@ def get_ROI(image, downsample_factor=8):
     if downsample_factor:
         image = image[::downsample_factor, ::downsample_factor]
 
-    image = sk.exposure.rescale_intensity(image, in_range=(np.min(image), 0.5 * np.max(image)), out_range=(0.0, 1.0))
+    # image = sk.exposure.rescale_intensity(image, in_range=(np.min(image), 0.5 * np.max(image)), out_range=(0.0, 1.0))
 
     fig, ax = plt.subplots(figsize=(12, 10))
-    ax.imshow(image, cmap="gray")
+    #ax.imshow(image, cmap="gray")
+    ax.imshow(image)
     ax.set_title("Drag to resize and move the selection. Press enter to create an ROI. Close image when done.")
 
     fig.canvas.mpl_connect('key_press_event', on_key)

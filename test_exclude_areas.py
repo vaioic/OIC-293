@@ -60,8 +60,7 @@ tissue_mask_final = sk.morphology.isotropic_erosion(tissue_mask_solid, 200)
 
 tissue_mask_final[~tissue_mask] = False
 
-#%% Plotting
-
+#%% 
 #Overlay mask
 alpha = 0.2
 
@@ -78,5 +77,47 @@ plt.show()
 
 # %% Try to identify other abnormalities to exclude
 
+roi_to_exclude = tissue_analyzer.get_ROI(img_overlay)
+
+for roi in roi_to_exclude:
+    tissue_mask_final[roi["ymin"]:roi["ymax"],
+                      roi["xmin"]:roi["xmax"]] = False
 
 
+#%% Plotting
+
+#Overlay mask
+alpha = 0.2
+
+img_overlay = np.zeros((img_ds.shape[0], img_ds.shape[1], 3))
+
+img_ds_brighter = sk.exposure.equalize_hist(img_ds)
+
+img_overlay[..., 0] = (1 - alpha) * img_ds_brighter
+img_overlay[..., 1] = (1 - alpha) * img_ds_brighter + (alpha * tissue_mask_final)
+img_overlay[..., 2] = (1 - alpha) * img_ds_brighter
+
+plt.imshow(img_overlay)
+plt.show()
+
+#%% Finish processing
+# Segment the marker
+marker_mask = segment_marker(img_marker, tissue_mask, threshold_mult=marker_threshold_factor)
+
+# Identify nuclei - Detections are likely more accurate for number of nuclei, as some do not show up in the labels
+nucl_detections, nucl_labels = detect_nuclei(img_DAPI)
+
+nucl_props = sk.measure.regionprops_table(
+    nucl_labels, 
+    properties=["area", "eccentricity"]
+)
+
+# Measure data
+data = {
+    "num_nuclei": len(nucl_detections),
+    "mean_nuclear_area": np.mean(nucl_props["area"]),
+    "mean_nuclear_circularity": np.mean(nucl_props["eccentricity"]),
+    "total_tissue_area": np.count_nonzero(tissue_mask),
+    "total_marker_area": np.count_nonzero(marker_mask),
+    "ratio_areas": np.count_nonzero(marker_mask) / np.count_nonzero(tissue_mask)
+}
