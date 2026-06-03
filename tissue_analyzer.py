@@ -186,17 +186,15 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         print("Loaded configuration file.")
         print(roi_list)
 
+    #---Start processing---#
+
     # Read in the image
     reader = BioImage(image_path)
 
     # Define the different channels
     img_DAPI = reader.data[0, 0, ...].squeeze()
     img_marker = reader.data[0, 1, ...].squeeze()
-
-    # # TEMP:
-    # img_DAPI = img_DAPI[::8, ::8]
-    # img_marker = img_marker[::8, ::8]
-
+    
     # Rescale image intensity for downstream processing
     img_DAPI_norm = sk.exposure.rescale_intensity(img_DAPI, out_range=(0.0, 1.0))
     img_marker_norm = sk.exposure.rescale_intensity(img_marker, out_range=(0.0, 1.0))
@@ -237,78 +235,86 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
             raise ValueError(f"Could not determine marker threshold factor for unknown tissue type.")
    
     print(f"Threshold factor: {marker_threshold_factor}")
-    # exit()
+    
+    # Segment the tissue
+    tissue_mask = img_marker_norm > tissue_threshold
 
-    if not roi_list:
-        # If no ROIs were provided in the configuration file, prompt the user to select some
+    tissue_mask = sk.morphology.remove_small_holes(tissue_mask, max_size=5000)
+    tissue_mask = sk.morphology.remove_small_objects(tissue_mask, max_size=15000)
 
-        # Get ROIs to process
-        roi_list = get_ROI(img_marker)
+    # Shrink the mask
+    tissue_mask_solid = ndimage.binary_fill_holes(tissue_mask)
 
-    # Parse each ROI to measure marked area
-    fn = image_path.stem
-    all_data = []
-    for idx, roi in enumerate(roi_list):
+    # tissue_mask_final = sk.morphology.erosion(tissue_mask_solid, footprint=[(np.ones((2, 2)), 100)])
+    # #tissue_mask_final = sk.morphology.isotropic_erosion(tissue_mask_solid, 200)
 
-        # Index the sub-images
-        roi_DAPI = img_DAPI_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
-        roi_marker = img_marker_norm[roi["ymin"]:roi["ymax"], roi["xmin"]:roi["xmax"]]
+    # This calculates how far every True pixel is from the nearest False edge.
+    distance_map = ndimage.distance_transform_edt(tissue_mask_solid)
 
-        data, tissue_mask, marker_mask, nucl_detections, nucl_labels = process_ROI(roi_DAPI, roi_marker, threshold=tissue_threshold, downsample=downsample, marker_threshold_factor=marker_threshold_factor)
+    # 2. Re-use your existing memory mask array in-place to save memory allocation time.
+    # A threshold of 200 matches isotropic_erosion(..., radius=200) exactly.
+    np.greater(distance_map, 200, out=tissue_mask_solid)
 
-        # Add ROI metadata
-        data["filename"] = str(image_path)
-        data["ROI_xmin"] = roi["xmin"]
-        data["ROI_xmax"] = roi["xmax"]
-        data["ROI_ymin"] = roi["ymin"]
-        data["ROI_ymax"] = roi["ymax"]
+    # Rename variable to match your pipeline
+    tissue_mask_final = tissue_mask_solid
 
-        all_data.append(data)
-        
-        # Generate and save output images
-        rgb_img = np.zeros((roi_DAPI.shape[0], roi_DAPI.shape[1], 3))
+    # Reintroduce small features
+    tissue_mask_final[~tissue_mask] = False
 
-        # Normalize the intensities
-        roi_marker = sk.exposure.rescale_intensity(roi_marker, out_range=(0.0, 1.0))
-        roi_DAPI = sk.exposure.rescale_intensity(roi_DAPI, out_range=(0.0, 1.0))
+    # Generate an overlay image
+    img_ds = img_marker_norm[::8, ::8] # Downscale image for display
+    tissue_mask_final_ds = tissue_mask_final[::8, ::8]
+    alpha = 0.2
+    img_overlay = np.zeros((img_ds.shape[0], img_ds.shape[1], 3))
 
-        rgb_img[..., 0] = roi_marker
-        rgb_img[..., 1] = roi_marker
-        rgb_img[..., 2] = roi_DAPI
+    img_ds_brighter = sk.exposure.equalize_hist(img_ds)
 
-        # plt.imshow(rgb_img)
-        # plt.show()
+    img_overlay[..., 0] = (1 - alpha) * img_ds_brighter
+    img_overlay[..., 1] = (1 - alpha) * img_ds_brighter + (alpha * tissue_mask_final_ds)
+    img_overlay[..., 2] = (1 - alpha) * img_ds_brighter
 
-        ov_mask = sk.segmentation.mark_boundaries(rgb_img, tissue_mask, 
-                                                mode="thick", color=(0, 1, 0))
-        ov_mask = sk.segmentation.mark_boundaries(ov_mask, marker_mask, 
-                                                  mode="thick", 
-                                                  color=(1, 0, 1))
-        
-        sk.io.imsave(output_path / (fn + "_roi" + f"{idx}" + "_masks.png"), sk.util.img_as_ubyte(ov_mask))
+    roi_to_exclude = get_ROI(img_overlay)
 
-        # Mark the nuclei
-        ov_nucl = sk.segmentation.mark_boundaries(
-            roi_DAPI,
-            nucl_labels)
-        
-        fig, ax = plt.subplots(figsize=(10, 12))
-        ax.imshow(ov_nucl)
+    for roi in roi_to_exclude:
+        tissue_mask_final[roi["ymin"]:roi["ymax"],
+                          roi["xmin"]:roi["xmax"]] = False
 
-        # Get positions of nuclei
-        xx = []
-        yy = []
+    # Process the whole tissue
+    # Segment the marker
+    marker_mask = segment_marker(img_marker_norm, tissue_mask_final, threshold_mult=marker_threshold_factor)
 
-        for d in nucl_detections:
+    # Commented for now - Out of memory
+    #nucl_detections, _ = detect_nuclei(img_DAPI_norm)
 
-            y, x, _ = d
-            xx.append(x)
-            yy.append(y)
+    # Measure data
+    data = {
+        # "num_nuclei": len(nucl_detections),
+        "filename": str(image_path),
+        "total_tissue_area": np.count_nonzero(tissue_mask),
+        "total_marker_area": np.count_nonzero(marker_mask),
+        "ratio_areas": np.count_nonzero(marker_mask) / np.count_nonzero(tissue_mask)
+    }
 
-        ax.scatter(xx, yy, 1)
-        plt.savefig(output_path / (fn + "_roi" + f"{idx}" + "_nucl.png"),
-                    dpi=300, bbox_inches="tight")
-        plt.close()
+
+
+    # # Mark the nuclei
+    # fig, ax = plt.subplots(figsize=(10, 12))
+    # ax.imshow(img_DAPI_norm)
+
+    # # Get positions of nuclei
+    # xx = []
+    # yy = []
+
+    # for d in nucl_detections:
+
+    #     y, x, _ = d
+    #     xx.append(x)
+    #     yy.append(y)
+
+    # ax.scatter(xx, yy, 1)
+    # plt.savefig(output_path / (fn + "_detectedNuclei.png"),
+    #             dpi=300, bbox_inches="tight")
+    # plt.close()
                                                 
         
     # # Save the outputs
@@ -320,22 +326,23 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
     # # Save the output image
     # sk.io.imsave(output_path / (fn + ".png"), output_img)
 
-    # Save data
-    all_keys = set().union(*(d.keys() for d in all_data))
+    # # Save data
+    # all_keys = set().union(*(data))
 
-    headers = ["filename", "ROI_xmin", "ROI_xmax", "ROI_ymin", "ROI_ymax"]
+    # headers = ["filename"]
 
-    # Automatically append the rest of the keys
-    for key in sorted(all_keys):
-        if key not in headers:
-            headers.append(key)
+    # # Automatically append the rest of the keys
+    # for key in sorted(all_keys):
+    #     if key not in headers:
+    #         headers.append(key)
     
     with open(output_path / (fn + "_data.csv"), mode="w", newline="", encoding="utf-8") as file:
+        headers = data.keys()
             
         writer = csv.DictWriter(file, fieldnames=headers)
         
         writer.writeheader()  # Writes the first row (column names)
-        writer.writerows(all_data)  # Writes all rows of data
+        writer.writerow(data)  # Writes all rows of data
 
     # Save processing configuration
     config_data = {
@@ -349,6 +356,26 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         },
         "rois": roi_list
     }
+
+    # Save the mask
+    fn = (image_path.stem).lower()
+    sk.io.imsave(output_path / (fn + "_mask.tif"), tissue_mask_final)
+       
+    # Generate and save downsampled output images
+    img_marker_norm_ds = img_marker_norm[::8, ::8]
+    rgb_img = np.zeros((img_marker_norm_ds.shape[0], img_marker_norm_ds.shape[1], 3))
+
+    rgb_img[..., 0] = img_marker_norm_ds
+    rgb_img[..., 1] = img_marker_norm_ds
+    rgb_img[..., 2] = img_DAPI_norm[::8, ::8]
+
+    ov_mask = sk.segmentation.mark_boundaries(rgb_img, tissue_mask_final[::8, ::8], 
+                                            mode="thick", color=(0, 1, 0))
+    ov_mask = sk.segmentation.mark_boundaries(ov_mask, marker_mask[::8, ::8], 
+                                                mode="thick", 
+                                                color=(1, 0, 1))
+    
+    sk.io.imsave(output_path / (fn + "_overlay.png"), sk.util.img_as_ubyte(ov_mask))
 
     with open(output_path / (fn + "_config.json"), "w") as cf:
         json.dump(config_data, cf, indent=4)
@@ -529,7 +556,7 @@ def segment_tissue(image, threshold):
     mask = image > threshold
 
     mask = sk.morphology.remove_small_objects(mask, max_size=10000)
-    mask = sk.morphology.remove_small_oholes(mask, max_size=5000)    
+    mask = sk.morphology.remove_small_holes(mask, max_size=5000)    
     #mask = ndimage.binary_fill_holes(mask)
     #mask = sk.morphology.opening(mask, sk.morphology.disk(30))
 
@@ -606,16 +633,12 @@ def generate_output_image(image, tissue_mask, marker_mask, downsample=0.25):
 def main():
     # This is primarily for testing
 
-    # process_image("../data/10389_Plin2-rescan.czi", "../processed/2026-05-18 Dev")
+    output_dir = "../processed/2026-06-03 Dev"
 
-    #process_image("../data/10390_Plin2.czi", "../processed/2026-05-29 Dev")
-    # process_image("../data/10390_TOM20.czi", "../processed/2026-05-29 Dev")
-    # process_image("../data/10390_Calnexis-rescan.czi", "../processed/2026-05-29 Dev")
-    process_image("../data/10402_Plin2.czi", "../processed/2026-05-29 Dev")
-    process_image("../data/10403_Plin2-rescan.czi", "../processed/2026-05-29 Dev")
-    # process_image("../data/cropped_for_testing/10389_Plin2_Quarter.czi", "../processed/2026-05-22 Dev")
-    # process_directory("../data", "../processed/2026-05-18/")    
-    # process_directory("../data", "../processed/2026-05-15 Dev/")
+    # process_image("../data/10389_Plin2-rescan.czi", output_dir)
+    process_image("../data/10390_Plin2.czi", output_dir)
+    process_image("../data/10402_Plin2.czi", output_dir)
+    process_image("../data/10403_Plin2-rescan.czi", output_dir)
 
 if __name__ == "__main__":
     main()
