@@ -23,6 +23,14 @@ This is a project with Yujin Leong (Lein Lab).
    python -m venv venv
    ```
 
+python3.13 -m venv .venv
+source .venv/bin/activate
+
+   ```powershell
+   python3.13 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
 3. Activate the virtual environment
    ```bash
    .\venv\Scripts\activate
@@ -30,6 +38,7 @@ This is a project with Yujin Leong (Lein Lab).
 
 4. Install the dependencies using Pip
    ```bash
+   python -m pip install --upgrade pip
    python -m pip install -r .\requirements.txt
    ```
 
@@ -38,6 +47,7 @@ This is a project with Yujin Leong (Lein Lab).
 1. Start the virtual environment if not already loaded
    ```bash
    .\venv\Scripts\activate
+   python -m analysis.20260616_batch1
    ```
 
 TBD

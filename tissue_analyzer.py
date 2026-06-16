@@ -44,9 +44,7 @@ def process_directory(input_dir, output_dir):
     else:
         raise TypeError(f"Expected input_dir to be a str or Path. Instead it is a {type(input_dir)}.")
     
-    if not input_dir.exists():
-        input_dir.mkdir(parents=True)
-    elif input_dir.is_file():
+    if input_dir.is_file():
         raise TypeError(f"Expected input_dir to be a directory. Instead it appears to be a file: {input_dir}.")
     
     if isinstance(output_dir, str):
@@ -68,6 +66,7 @@ def process_directory(input_dir, output_dir):
         csvwriter.writerow(["File", "Marker Area (px)", "Tissue Area (px)", "Ratio"])                          
     
         file_list = get_filtered_file_list(input_dir)
+        print(file_list)
 
         for f in file_list:
 
@@ -92,7 +91,10 @@ def get_filtered_file_list(input_dir):
         The final filtered list of files
     """
 
-    file_list = input_dir.glob("*.czi")
+    if not input_dir.exists():
+        raise FileNotFoundError(f"Input directory {input_dir.resolve()} was not found.")
+    
+    file_list = input_dir.glob("*_Plin2*.czi")
 
     pattern = re.compile(r"^([0-9]+)_([\w]+)(-rescan)?\.*", re.IGNORECASE)
 

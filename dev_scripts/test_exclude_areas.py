@@ -13,7 +13,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.widgets import RectangleSelector
 from scipy import ndimage
 
-import tissue_analyzer
+import tissue_analyzer as tissue_analyzer
 
 image_path = "../data/10402_Plin2.czi"
 
