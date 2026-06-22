@@ -70,9 +70,9 @@ def process_directory(input_dir, output_dir):
 
         for f in file_list:
 
-            num_pixels_marker, num_pixels_tissue, ratio = process_image(f, output_dir)
+            data = process_image(f, output_dir)
 
-            csvwriter.writerow([f.name, num_pixels_marker, num_pixels_tissue, ratio])    
+            csvwriter.writerow([data["filename"], data["total_marker_area"], data["total_tissue_area"], data["ratio_areas"]])    
 
 def get_filtered_file_list(input_dir):
     """
@@ -383,6 +383,8 @@ def process_image(image_path, output_path, config_path=None, downsample=None, ti
         json.dump(config_data, cf, indent=4)
 
     print(f"Config file saved to {str(output_path / (fn + '_config.json'))}")
+
+    return data
 
     # # Measure the number of pixels (equiv. to area) of the tissue and marker
     # num_pixels_tissue = np.count_nonzero(tissue_mask)
